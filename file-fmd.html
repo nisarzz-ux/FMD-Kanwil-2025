@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="id">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rekap Data FMD</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 18px;
+        }
+        
+        pre {
+            white-space: pre-wrap;
+        }
+        
+        table {
+            font-size: .9rem;
+        }
+        
+        .table-wrap {
+            max-height: 360px;
+            overflow: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1 class="mb-3">Rekapan Data FMD Kanwil Ditjenpas DK Jakarta 2025
+        </h1>
+
+        <div class="mb-3">
+            <input id="file-input" type="file" accept=".csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="form-control" />
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-4">
+                <label class="form-label">Baris yang Ditampilkan</label>
+                <input id="preview-rows" type="number" class="form-control" value="200" min="1" />
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Delimiter (CSV) - (Tidak Perlu di Isi)  </label>
+                <input id="csv-delim" class="form-control" value="," />
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+                <button id="clear-btn" class="btn btn-outline-secondary w-100">Reset Ulang</button>
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <div id="table-container" class="table-wrap border rounded p-2 bg-white"></div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <h5 class="card-title">Olah Data Berdasarkan</h5>
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-4">
+                        <label class="form-label">Variabel yang Dipilih</label>
+                        <select id="group-col" class="form-select"><option value="">-- pilih --</option></select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Pilih kolom nilai (numeric)</label>
+                        <select id="value-col" class="form-select"><option value="">-- pilih --</option></select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Rumus Olah Data</label>
+                        <select id="agg-func" class="form-select">
+              <option value="sum">Sum</option>
+              <option value="count">Count</option>
+              <option value="avg">Average</option>
+              <option value="min">Min</option>
+              <option value="max">Max</option>
+            </select>
+                    </div>
+                    <div class="col-md-2">
+                        <button id="run-agg" class="btn btn-primary w-100">Submit</button>
+                    </div>
+                </div>
+
+                <div class="mt-3" id="agg-result"></div>
+            </div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <button id="download-csv" class="btn btn-success">Download CSV (filtered/rekap)</button>
+            <button id="copy-clipboard" class="btn btn-outline-secondary">Salin ke clipboard</button>
+        </div>
+
+        <footer class="mt-4 text-muted small">Client-only demo • menggunakan PapaParse & SheetJS</footer>
+    </div>
+
+    <!-- Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+
+    <script>
+        // Simple client-side CSV/Excel viewer + aggregator
+        let rawRows = [];
+        let header = [];
+
+        const fileInput = document.getElementById('file-input');
+        const tableContainer = document.getElementById('table-container');
+        const previewRowsInput = document.getElementById('preview-rows');
+        const csvDelimInput = document.getElementById('csv-delim');
+        const groupColSelect = document.getElementById('group-col');
+        const valueColSelect = document.getElementById('value-col');
+        const aggResult = document.getElementById('agg-result');
+        const runAggBtn = document.getElementById('run-agg');
+        const downloadCsvBtn = document.getElementById('download-csv');
+        const copyBtn = document.getElementById('copy-clipboard');
+        const clearBtn = document.getElementById('clear-btn');
+
+        fileInput.addEventListener('change', async(e) => {
+            const f = e.target.files[0];
+            if (!f) return;
+            const name = f.name.toLowerCase();
+
+            if (name.endsWith('.csv')) {
+                readCSV(f);
+            } else if (name.endsWith('.xls') || name.endsWith('.xlsx')) {
+                readExcel(f);
+            } else {
+                alert('Format tidak didukung. Gunakan .csv, .xls, atau .xlsx');
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            rawRows = [];
+            header = [];
+            tableContainer.innerHTML = '';
+            groupColSelect.innerHTML = '<option value="">-- pilih --</option>';
+            valueColSelect.innerHTML = '<option value="">-- pilih --</option>';
+            aggResult.innerHTML = '';
+            fileInput.value = '';
+        });
+
+        function readCSV(file) {
+            const delim = csvDelimInput.value || ',';
+            Papa.parse(file, {
+                header: true,
+                dynamicTyping: false,
+                skipEmptyLines: true,
+                delimiter: delim,
+                complete: (res) => {
+                    header = res.meta.fields || [];
+                    rawRows = res.data;
+                    renderPreview();
+                },
+                error: (err) => alert('Error parse CSV: ' + err.message)
+            });
+        }
+
+        function readExcel(file) {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const data = new Uint8Array(ev.target.result);
+                const workbook = XLSX.read(data, {
+                    type: 'array'
+                });
+                const sheetName = workbook.SheetNames[0];
+                const sheet = workbook.Sheets[sheetName];
+                const json = XLSX.utils.sheet_to_json(sheet, {
+                    defval: ''
+                });
+                header = Object.keys(json[0] || {});
+                rawRows = json;
+                renderPreview();
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function renderPreview() {
+            const rowsToShow = Number(previewRowsInput.value) || 200;
+            const displayRows = rawRows.slice(0, rowsToShow);
+            if (!header || header.length === 0) header = Object.keys(displayRows[0] || {});
+
+            // build table
+            const table = document.createElement('table');
+            table.className = 'table table-sm table-striped';
+            const thead = document.createElement('thead');
+            const thr = document.createElement('tr');
+            header.forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                thr.appendChild(th);
+            });
+            thead.appendChild(thr);
+            table.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            displayRows.forEach(r => {
+                const tr = document.createElement('tr');
+                header.forEach(h => {
+                    const td = document.createElement('td');
+                    td.textContent = r[h] !== undefined ? r[h] : '';
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+
+            tableContainer.innerHTML = '';
+            tableContainer.appendChild(table);
+
+            populateSelectors();
+        }
+
+        function populateSelectors() {
+            groupColSelect.innerHTML = '<option value="">-- pilih --</option>';
+            valueColSelect.innerHTML = '<option value="">-- pilih --</option>';
+            header.forEach(h => {
+                const opt1 = document.createElement('option');
+                opt1.value = h;
+                opt1.textContent = h;
+                groupColSelect.appendChild(opt1);
+                const opt2 = document.createElement('option');
+                opt2.value = h;
+                opt2.textContent = h;
+                valueColSelect.appendChild(opt2);
+            });
+        }
+
+        runAggBtn.addEventListener('click', () => {
+            const g = groupColSelect.value;
+            const v = valueColSelect.value;
+            const func = document.getElementById('agg-func').value;
+            if (!g) return alert('Pilih kolom group-by');
+            if (!v && func !== 'count') return alert('Pilih kolom nilai untuk operasi selain Count');
+
+            const map = new Map();
+            rawRows.forEach(row => {
+                const key = row[g] === undefined ? '' : String(row[g]);
+                const rawVal = row[v];
+                const num = rawVal === '' || rawVal === null ? NaN : Number(String(rawVal).replace(/,/g, ''));
+
+                if (!map.has(key)) map.set(key, {
+                    count: 0,
+                    sum: 0,
+                    min: Number.POSITIVE_INFINITY,
+                    max: Number.NEGATIVE_INFINITY
+                });
+                const obj = map.get(key);
+                obj.count += 1;
+                if (!isNaN(num)) {
+                    obj.sum += num;
+                    if (num < obj.min) obj.min = num;
+                    if (num > obj.max) obj.max = num;
+                }
+            });
+
+            // build result rows
+            const out = [];
+            for (const [key, obj] of map.entries()) {
+                const row = {
+                    group: key
+                };
+                if (func === 'count') row.value = obj.count;
+                else if (func === 'sum') row.value = obj.sum;
+                else if (func === 'avg') row.value = (obj.count && !isFinite(obj.sum) ? '' : (obj.sum / obj.count));
+                else if (func === 'min') row.value = obj.min === Number.POSITIVE_INFINITY ? '' : obj.min;
+                else if (func === 'max') row.value = obj.max === Number.NEGATIVE_INFINITY ? '' : obj.max;
+                out.push(row);
+            }
+
+            // sort by group
+            out.sort((a, b) => String(a.group).localeCompare(String(b.group)));
+
+            renderAggTable(out, g, v, func);
+        });
+
+        function renderAggTable(rows, g, v, func) {
+            const tbl = document.createElement('table');
+            tbl.className = 'table table-bordered table-sm';
+            const thead = document.createElement('thead');
+            const trh = document.createElement('tr');
+            trh.innerHTML = `<th>${escapeHtml(g)}</th><th>${escapeHtml(v || 'Value')}</th>`;
+            thead.appendChild(trh);
+            tbl.appendChild(thead);
+            const tbody = document.createElement('tbody');
+            rows.forEach(r => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${escapeHtml(r.group)}</td><td>${escapeHtml(r.value)}</td>`;
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            aggResult.innerHTML = '';
+            const title = document.createElement('div');
+            title.innerHTML = `<strong>Rekap (${func}) — group: ${escapeHtml(g)}${v ? ', nilai: ' + escapeHtml(v) : ''}</strong>`;
+            aggResult.appendChild(title);
+            aggResult.appendChild(tbl);
+
+            // save last result for download / copy
+            window._lastExport = {
+                headers: [g, v || 'value'],
+                rows
+            };
+        }
+
+        downloadCsvBtn.addEventListener('click', () => {
+            const data = window._lastExport || {
+                headers: header,
+                rows: rawRows.map(r => header.map(h => r[h] || ''))
+            };
+            let csv = '';
+            if (data.rows && data.rows.length && data.rows[0].group !== undefined) {
+                // rekap format
+                csv += data.headers.join(',') + '\n';
+                data.rows.forEach(r => csv += `${escapeCsv(r.group)},${escapeCsv(r.value)}\n`);
+            } else {
+                // raw rows
+                csv += (data.headers || header).join(',') + '\n';
+                rawRows.forEach(r => {
+                    csv += header.map(h => escapeCsv(r[h] || '')).join(',') + '\n';
+                });
+            }
+
+            const blob = new Blob([csv], {
+                type: 'text/csv;charset=utf-8;'
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'rekapan.csv';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        });
+
+        copyBtn.addEventListener('click', async() => {
+            const data = window._lastExport || {
+                headers: header,
+                rows: rawRows.map(r => header.map(h => r[h] || ''))
+            };
+            let text = '';
+            if (data.rows && data.rows[0].group !== undefined) {
+                text += data.headers.join('\t') + '\n';
+                data.rows.forEach(r => text += `${r.group}\t${r.value}\n`);
+            } else {
+                text += header.join('\t') + '\n';
+                rawRows.forEach(r => text += header.map(h => r[h] || '').join('\t') + '\n');
+            }
+            try {
+                await navigator.clipboard.writeText(text);
+                alert('Disalin ke clipboard.');
+            } catch (e) {
+                alert('Gagal menyalin: ' + e.message);
+            }
+        });
+
+        function escapeCsv(v) {
+            if (v === null || v === undefined) return '';
+            const s = String(v);
+            return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        }
+
+        function escapeHtml(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+    </script>
+</body>
+
+</html>
